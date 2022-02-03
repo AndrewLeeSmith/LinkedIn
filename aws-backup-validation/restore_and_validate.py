@@ -131,6 +131,10 @@ def handle_restore(input_event):
     #Retrieve instance ID for the new instance from restore job details
     db_instance = input_event['detail']['createdResourceArn'].split(':')[6]
     logger.info('Restored instance: ' + db_instance)
+
+    instance_info = rds.describe_db_instances(
+                DBInstanceIdentifier=db_instance
+    )
     
     rds_host = instance_info['DBInstances'][0]['Endpoint']['Address']
     rds_port = instance_info['DBInstances'][0]['Endpoint']['Port']
