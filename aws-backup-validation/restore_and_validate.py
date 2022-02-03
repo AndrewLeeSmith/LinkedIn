@@ -11,7 +11,7 @@
 #   - inline policy: secretsmanager:GetSecretValue (for secret in env var)
 #   - inline policy: rds:ModifyDBInstance, rds:deleteDBInstance
 #   - inline policy: s3:PutObject (for bucket in env var)
-#   - inline policy logs:PutLogEvents and logs:DescribeLogStreams (for log group in env var) 
+#   - inline policy: logs:PutLogEvents and logs:DescribeLogStreams (for log group in env var) 
 
 import os
 import sys
