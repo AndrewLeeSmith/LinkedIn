@@ -149,12 +149,12 @@ def handle_restore(input_event):
     completion_obj = datetime.datetime.strptime(input_event['detail']['completionDate'], '%Y-%m-%dT%H:%M:%S.%fZ')
     restore_elapsed = (completion_obj - creation_obj).total_seconds() / 60.0
 
-    #Create output summary (timestamps modified to be compatible with Athena timestamp format)
+    #Create JSON validation results summary for S3 and CloudWatch Logs
     restore_summary = {
         "recovery_point_arn" : restore_info['RecoveryPointArn'],
         "restored_instance_id" : db_instance,
-        "restore_start_time" : (input_event['detail']['creationDate']).replace('T', ' ').replace('Z', ''),
-        "restore_end_time" : (input_event['detail']['completionDate']).replace('T', ' ').replace('Z', ''),
+        "restore_start_time" : input_event['detail']['creationDate'],
+        "restore_end_time" : input_event['detail']['completionDate'],
         "restore_duration" : round(restore_elapsed),
         "age_latest_db_tx" : round(age_latest_db_tx)
     }
