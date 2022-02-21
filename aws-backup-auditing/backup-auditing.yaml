@@ -1,0 +1,220 @@
+#CloudFormation template for provisioning an AWS Backup Audit Manager framework and report plan into many accounts and regions via a stackset. 
+#An S3 bucket is also provisioned into the first region listed in the stackset, with S3 replication (of report plan output) into an S3 bucket in a monitoring account.
+#This template has a prerequisite that AWS Config must be enabled in each target region for each account before it is deployed.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Backup Audit Manager Framework and Report Plan template'
+
+Parameters:
+  FrameworkName:
+    Type: String
+    Default: 'backups_framework'  
+  FrameworkDescription:
+    Type: String
+    Default: 'Backup Audit Manager Framework'  
+  FrameworkRetentionDays:
+    Type: Number
+    Default: 30  
+  FrameworkFrequencyHours:
+    Type: Number
+    Default: 24  
+  ReportPlanName:
+    Type: String
+    Default: 'backups_report_plan'
+  ReportPlanDescription:
+    Type: String
+    Default: 'Backup Audit Manager Report Plan'
+  ReportPlanTemplate:
+    Type: String
+    Default: 'RESOURCE_COMPLIANCE_REPORT'
+  ReportsS3BucketName:
+    Type: String
+    Default: 'backup-reports'
+    Description: 'A hyphen and account ID are appended to the bucket name entered.'
+  ReportsS3BucketRegion: #Select this as the first deployment region in the stackset
+    Type: String
+    Default: 'eu-west-2'
+  ReportsS3BucketReplicationDestinationAccountID:
+    Type: String
+  ReportsS3BucketReplicationDestinationBucketName:
+    Type: String
+
+#Ensures one reports bucket per account, used by all regions in the account 
+Conditions:
+  CreateReportsS3Bucket: !Equals [!Ref AWS::Region, !Ref ReportsS3BucketRegion]
+
+Resources:
+  #One Backup Framework and one Backup Report Plan per account per region
+  BackupFramework:
+    Type: 'AWS::Backup::Framework'
+    Properties:
+      FrameworkName: !Ref FrameworkName
+      FrameworkDescription: !Ref FrameworkDescription
+      FrameworkControls:
+        - ControlName: BACKUP_RESOURCES_PROTECTED_BY_BACKUP_PLAN
+        - ControlName: BACKUP_RECOVERY_POINT_MINIMUM_RETENTION_CHECK
+          ControlInputParameters:
+            - ParameterName: requiredRetentionDays
+              ParameterValue: !Ref FrameworkRetentionDays
+        - ControlName: BACKUP_RECOVERY_POINT_MANUAL_DELETION_DISABLED
+        - ControlName: BACKUP_PLAN_MIN_FREQUENCY_AND_MIN_RETENTION_CHECK
+          ControlInputParameters:
+            - ParameterName: requiredRetentionDays
+              ParameterValue: !Ref FrameworkRetentionDays
+            - ParameterName: requiredFrequencyUnit
+              ParameterValue: 'hours'
+            - ParameterName: requiredFrequencyValue
+              ParameterValue: !Ref FrameworkFrequencyHours
+        - ControlName: BACKUP_RECOVERY_POINT_ENCRYPTED
+        
+  BackupReportPlan:
+    Type: 'AWS::Backup::ReportPlan'
+    Properties:
+      ReportPlanName: !Ref ReportPlanName
+      ReportPlanDescription: !Ref ReportPlanDescription
+      ReportDeliveryChannel:
+        Formats:
+          - 'CSV'
+        S3BucketName: !Join
+                        - ''
+                        - - !Ref ReportsS3BucketName
+                          - '-'
+                          - !Ref AWS::AccountId
+      ReportSetting:
+        ReportTemplate: !Ref ReportPlanTemplate
+        FrameworkArns:
+          - Ref: BackupFramework
+
+  #S3 Bucket for Backup Audit Manager reports - one per account, for all regions' reports
+  ReportsS3Bucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateReportsS3Bucket
+    Properties: 
+      BucketName: !Join
+                    - ''
+                    - - !Ref ReportsS3BucketName
+                      - '-'
+                      - !Ref AWS::AccountId
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE
+      VersioningConfiguration:
+        Status: Enabled
+      ReplicationConfiguration:
+        Role: !GetAtt
+          - ReportsS3BucketReplicationRole
+          - Arn
+        Rules:
+          - Destination:
+              AccessControlTranslation: 
+                Owner: Destination
+              Account: !Ref ReportsS3BucketReplicationDestinationAccountID
+              Bucket: !Join
+                        - ''
+                        - - 'arn:aws:s3:::'
+                          - !Ref ReportsS3BucketReplicationDestinationBucketName
+            Id: ReplicateBackupReports
+            Prefix: ''
+            Status: Enabled
+  
+  #Replication is used to copy all accounts' reports to a single bucket in a master account
+  #This role and the subsequent access policy allow replication to the bucket in the master account  
+  ReportsS3BucketReplicationRole:
+    Type: 'AWS::IAM::Role'
+    Condition: CreateReportsS3Bucket
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+                
+  ReportsS3BucketReplicationPolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: CreateReportsS3Bucket
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetReplicationConfiguration'
+              - 's3:ListBucket'
+            Effect: Allow
+            Resource:
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref ReportsS3Bucket
+          - Action:
+              - 's3:GetObjectVersion'
+              - 's3:GetObjectVersionAcl'
+            Effect: Allow
+            Resource:
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref ReportsS3Bucket
+                  - /*
+          - Action:
+              - 's3:ReplicateObject'
+              - 's3:ReplicateDelete'
+            Effect: Allow
+            Resource: 
+                - !Join
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - !Ref ReportsS3BucketReplicationDestinationBucketName
+                    - /*
+      PolicyName: ReportsS3BucketReplicationPolicy
+      Roles:
+        - !Ref ReportsS3BucketReplicationRole
+
+  #Bucket policy that allows Backup Audit Manager to write reports into the reports bucket
+  ReportsS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateReportsS3Bucket
+    Properties:
+      Bucket: !Ref ReportsS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+            - 's3:PutObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref ReportsS3Bucket
+                - /*
+            Principal:
+              'AWS':
+                - !Join
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref AWS::AccountId
+                    - ':role/aws-service-role/reports.backup.amazonaws.com/AWSServiceRoleForBackupReports'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl':
+                  - 'bucket-owner-full-control' 
+
+Outputs:
+  FrameworkArn:
+    Value: !GetAtt BackupFramework.FrameworkArn
+  ReportPlanArn:
+    Value: !GetAtt BackupReportPlan.ReportPlanArn
+  BucketArn:
+    Condition: CreateReportsS3Bucket
+    Value: !GetAtt ReportsS3Bucket.Arn
+  ReplicationRoleArn:
+    Condition: CreateReportsS3Bucket
+    Value: !GetAtt ReportsS3BucketReplicationRole.Arn
+    
